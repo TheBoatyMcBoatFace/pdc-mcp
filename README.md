@@ -7,17 +7,31 @@ search and query datasets in the [CMS Provider Data Catalog](https://data.cms.go
 Runs as a Cloudflare Worker using the [`agents`](https://github.com/cloudflare/agents) `McpAgent`.
 The PDC API (DKAN) is read-only and unauthenticated, so the Worker is a thin, stateless proxy.
 
+## Discoverability
+
+So a client (and the user) can tell at a glance what's available:
+
+- **Server instructions** — the server advertises its 10 provider-type categories and the
+  recommended workflow on connect, so the model knows its scope without any tool call.
+- **`pdc://catalog` resource** — the browsable category map (themes, dataset counts, examples)
+  as ambient context for clients that support MCP resources.
+- **`explore_cms_data` prompt** — one-click "what CMS data can I explore?" for the user.
+
 ## Tools
 
 | Tool | What it does |
 |------|--------------|
-| `search_datasets` | Full-text search for datasets by keyword → identifiers, titles, descriptions |
-| `get_dataset` | Metadata for one dataset + its **distributions** (the queryable tables, each with a UUID) |
+| `list_categories` | The 10 provider-type categories (Hospitals, Dialysis facilities, …) with dataset counts + examples. Start here for "what do you have access to?" |
+| `search_datasets` | Full-text search, optionally scoped to a `theme` (category) and/or `keyword` → identifiers, titles, descriptions |
+| `get_dataset` | Metadata for one dataset + its **distributions** (queryable tables, each a UUID), theme, and data-dictionary link |
 | `get_dataset_schema` | Column names + types for a distribution — call before querying |
 | `query_dataset` | Structured query: `conditions` (filters), `properties` (column select), `sorts`, `limit`/`offset`. Returns rows + total match `count`. |
 
 Intended workflow the tool descriptions steer the model toward:
-**search → get_dataset → get_dataset_schema → query_dataset.**
+**list_categories → search_datasets → get_dataset → get_dataset_schema → query_dataset.**
+
+The full dataset list (used by `list_categories` and the catalog resource) is cached in-isolate
+for 10 minutes, so discovery is a single upstream call.
 
 ## Develop
 
@@ -56,5 +70,7 @@ No auth is required.
   the model from writing broken/expensive queries against DKAN's bracketed SQL dialect.
 - Distribution UUIDs change when CMS republishes a dataset, so always resolve them via
   `get_dataset` rather than caching them.
-- Possible additions: result caching (Cloudflare Cache API), a `list_datasets` browse tool,
-  and per-dataset data-dictionary lookups for human-readable column labels.
+- Data dictionaries are published by CMS as **PDFs** (not machine-readable), so `get_dataset`
+  surfaces the link but column meanings aren't returned as structured data.
+- Possible additions: query-result caching (Cloudflare Cache API), aggregation/`GROUP BY`
+  insights, and parsing the data-dictionary PDFs into structured column descriptions.

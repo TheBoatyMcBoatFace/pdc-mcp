@@ -36,6 +36,7 @@ export interface DatasetSummary {
   identifier: string;
   title: string;
   description: string;
+  theme?: string[];
   modified?: string;
   keyword?: string[];
   landingPage?: string;
@@ -50,6 +51,8 @@ export interface Distribution {
 
 export interface DatasetDetail extends DatasetSummary {
   distributions: Distribution[];
+  /** URLs of the human-readable data dictionaries (usually PDFs) describing the columns. */
+  dataDictionary?: string[];
 }
 
 export interface SchemaField {
@@ -57,17 +60,81 @@ export interface SchemaField {
   type: string;
 }
 
-/** Full-text search across datasets. Returns lightweight summaries. */
-export async function searchDatasets(fulltext: string, pageSize = 10): Promise<DatasetSummary[]> {
-  const q = new URLSearchParams({ fulltext, "page-size": String(pageSize) });
+export interface Category {
+  theme: string;
+  datasetCount: number;
+  examples: Array<{ identifier: string; title: string }>;
+}
+
+/** Normalize a DKAN theme/keyword entry (may be a plain string or a {data} ref object). */
+function refName(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object" && "data" in v) return String((v as any).data);
+  return String(v);
+}
+
+/**
+ * Best-effort in-isolate cache of the full dataset list. Powers list_categories and
+ * the catalog resource with a single upstream call. Cloudflare isolates are ephemeral,
+ * so this is a speedup, not a guarantee.
+ */
+let allCache: { at: number; data: any[] } | null = null;
+const ALL_TTL_MS = 10 * 60 * 1000;
+
+async function allDatasets(): Promise<any[]> {
+  if (allCache && Date.now() - allCache.at < ALL_TTL_MS) return allCache.data;
+  const data = (await req(`/metastore/schemas/dataset/items?show-reference-ids=false`)) as any[];
+  allCache = { at: Date.now(), data: Array.isArray(data) ? data : [] };
+  return allCache.data;
+}
+
+/** The catalog's provider-type categories (themes) with counts and example datasets. */
+export async function getCategories(): Promise<Category[]> {
+  const all = await allDatasets();
+  const byTheme = new Map<string, any[]>();
+  for (const d of all) {
+    for (const t of d.theme ?? []) {
+      const name = refName(t);
+      if (!byTheme.has(name)) byTheme.set(name, []);
+      byTheme.get(name)!.push(d);
+    }
+  }
+  return [...byTheme.entries()]
+    .map(([theme, items]) => ({
+      theme,
+      datasetCount: items.length,
+      examples: items.slice(0, 3).map((x) => ({ identifier: x.identifier, title: x.title })),
+    }))
+    .sort((a, b) => b.datasetCount - a.datasetCount);
+}
+
+export interface SearchFilters {
+  theme?: string;
+  keyword?: string;
+  pageSize?: number;
+}
+
+/**
+ * Search datasets by free text, optionally scoped to a provider-type `theme` and/or `keyword`.
+ * All three are optional; with none set it returns the first page of the whole catalog.
+ */
+export async function searchDatasets(
+  fulltext: string,
+  filters: SearchFilters = {},
+): Promise<DatasetSummary[]> {
+  const q = new URLSearchParams({ "page-size": String(filters.pageSize ?? 10) });
+  if (fulltext) q.set("fulltext", fulltext);
+  if (filters.theme) q.set("theme", filters.theme);
+  if (filters.keyword) q.set("keyword", filters.keyword);
   const data = (await req(`/search?${q}`)) as { results?: Record<string, any> };
   const results = data.results ? Object.values(data.results) : [];
   return results.map((r: any) => ({
     identifier: r.identifier,
     title: r.title,
     description: (r.description ?? "").slice(0, 500),
+    theme: (r.theme ?? []).map(refName),
     modified: r.modified,
-    keyword: r.keyword,
+    keyword: (r.keyword ?? []).map(refName),
     landingPage: r.landingPage,
   }));
 }
@@ -83,14 +150,20 @@ export async function getDataset(identifier: string): Promise<DatasetDetail> {
     format: dist.data?.format ?? dist.data?.mediaType,
     downloadURL: dist.data?.downloadURL,
   }));
+  const describedBy: string[] = (d.distribution ?? [])
+    .map((dist: any) => dist.data?.describedBy)
+    .filter((u: unknown): u is string => typeof u === "string");
+  const dataDictionary: string[] = [...new Set(describedBy)];
   return {
     identifier: d.identifier,
     title: d.title,
     description: d.description ?? "",
+    theme: (d.theme ?? []).map(refName),
     modified: d.modified,
-    keyword: d.keyword,
+    keyword: (d.keyword ?? []).map(refName),
     landingPage: d.landingPage,
     distributions: dists,
+    dataDictionary: dataDictionary.length ? dataDictionary : undefined,
   };
 }
 

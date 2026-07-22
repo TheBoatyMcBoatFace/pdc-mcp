@@ -6,7 +6,26 @@ import {
   getDataset,
   getDistributionSchema,
   queryDistribution,
+  getCategories,
 } from "./pdc.js";
+
+const INSTRUCTIONS = `This server exposes the CMS Provider Data Catalog (data.cms.gov/provider-data):
+official U.S. Medicare quality, cost, and directory data for healthcare providers.
+
+It covers ~234 datasets in 10 provider-type categories:
+Hospitals, Physician office visit costs, Dialysis facilities, Nursing homes including rehab
+services, Home health services, Doctors and clinicians, Hospice care, Inpatient rehabilitation
+facilities, Long-term care hospitals, and a Supplier directory.
+
+Recommended workflow:
+1. list_categories — see what provider types are available (start here for "what do you have?").
+2. search_datasets — find datasets by keyword, optionally scoped to a category (theme).
+3. get_dataset — get a dataset's distributions (its queryable tables, each a UUID).
+4. get_dataset_schema — get exact column names before querying.
+5. query_dataset — filter/sort/select rows; the result 'count' is the total matching rows.
+
+Columns are snake_case. This data is read-only. Cite the dataset title and note figures are
+from CMS when presenting results.`;
 
 /** Wrap a tool body so any thrown error becomes a readable MCP result instead of a 500. */
 function ok(data: unknown) {
@@ -18,24 +37,52 @@ function fail(err: unknown) {
 }
 
 export class PdcMcp extends McpAgent {
-  server = new McpServer({
-    name: "cms-pdc",
-    version: "0.1.0",
-  });
+  server = new McpServer(
+    {
+      name: "cms-pdc",
+      version: "0.2.0",
+    },
+    { instructions: INSTRUCTIONS },
+  );
 
   async init() {
     this.server.tool(
+      "list_categories",
+      "List the provider-type categories in the CMS Provider Data Catalog (e.g. Hospitals, " +
+        "Dialysis facilities, Nursing homes) with the number of datasets in each and a few example " +
+        "datasets. Call this to answer 'what data do you have access to?' and to help the user pick " +
+        "an area before searching.",
+      {},
+      async () => {
+        try {
+          return ok(await getCategories());
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    );
+
+    this.server.tool(
       "search_datasets",
       "Search the CMS Provider Data Catalog for datasets by keyword (e.g. 'hospital readmissions', " +
-        "'dialysis facilities', 'nursing home staffing'). Returns dataset identifiers, titles, and " +
-        "descriptions. Use this first to find which dataset to inspect and query.",
+        "'dialysis facilities', 'nursing home staffing'). Optionally scope to a category with " +
+        "`theme` (exact name from list_categories) and/or a `keyword`. Returns dataset identifiers, " +
+        "titles, and descriptions to inspect and query.",
       {
-        query: z.string().describe("Free-text search terms"),
+        query: z
+          .string()
+          .default("")
+          .describe("Free-text search terms; leave empty to browse a whole theme"),
+        theme: z
+          .string()
+          .optional()
+          .describe("Restrict to a provider-type category, exact name from list_categories"),
+        keyword: z.string().optional().describe("Restrict to datasets tagged with this keyword"),
         limit: z.number().int().min(1).max(50).default(10).describe("Max datasets to return"),
       },
-      async ({ query, limit }) => {
+      async ({ query, theme, keyword, limit }) => {
         try {
-          return ok(await searchDatasets(query, limit));
+          return ok(await searchDatasets(query, { theme, keyword, pageSize: limit }));
         } catch (e) {
           return fail(e);
         }
@@ -129,6 +176,49 @@ export class PdcMcp extends McpAgent {
           return fail(e);
         }
       },
+    );
+
+    // Ambient catalog: clients that support resources can load the full category map as context.
+    this.server.resource(
+      "catalog",
+      "pdc://catalog",
+      {
+        description:
+          "The CMS Provider Data Catalog map: provider-type categories with dataset counts and examples.",
+        mimeType: "application/json",
+      },
+      async (uri) => {
+        const categories = await getCategories();
+        return {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: "application/json",
+              text: JSON.stringify(categories, null, 2),
+            },
+          ],
+        };
+      },
+    );
+
+    // One-click discovery: helps a user who doesn't know what to ask for yet.
+    this.server.prompt(
+      "explore_cms_data",
+      "Summarize what CMS provider data is available and suggest questions to ask.",
+      async () => ({
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text:
+                "Call list_categories, then give me a short, friendly overview of the CMS provider " +
+                "data categories available here, and suggest 3-4 concrete questions I could ask " +
+                "(e.g. comparing facilities in my state). Keep it brief.",
+            },
+          },
+        ],
+      }),
     );
   }
 }
