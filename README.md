@@ -28,9 +28,14 @@ So a client (and the user) can tell at a glance what's available:
 | `get_dataset` | Metadata for one dataset + its **distributions** (queryable tables, each a UUID), theme, and data-dictionary link |
 | `get_dataset_schema` | Column `name` + `type` + CMS's human-readable `label` for a distribution — call before querying |
 | `query_dataset` | Structured query: `conditions` (filters), `properties` (column select), `sorts`, `limit`/`offset`. Returns rows + total match `count`. |
+| `aggregate_dataset` | GROUP BY aggregation: `count`/`sum`/`avg`/`min`/`max` metrics, optional `group_by`, `conditions` (WHERE), and `sorts` (rank by a metric). E.g. average star rating by state, facilities per state. |
 
 Intended workflow the tool descriptions steer the model toward:
-**list_categories → search_datasets → get_dataset → get_dataset_schema → query_dataset.**
+**list_categories → search_datasets → get_dataset → get_dataset_schema → query_dataset / aggregate_dataset.**
+
+Aggregation uses DKAN's structured query (expression + `groupings`), not SQL — DKAN's SQL
+endpoint doesn't support GROUP BY. Numeric columns stored as text are cast automatically, and
+metric values are returned as numbers.
 
 The full dataset list (used by `list_categories` and the catalog resource) is cached in-isolate
 for 10 minutes, so discovery is a single upstream call.

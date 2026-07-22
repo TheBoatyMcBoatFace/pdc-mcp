@@ -223,6 +223,69 @@ export async function queryDistribution(
   };
 }
 
+export type AggregateOperator = "count" | "sum" | "avg" | "min" | "max";
+
+export interface Metric {
+  operator: AggregateOperator;
+  column: string;
+  alias?: string;
+}
+
+export interface AggregateOptions {
+  metrics: Metric[];
+  groupBy?: string[];
+  conditions?: Condition[];
+  sorts?: Sort[];
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Run an aggregation (GROUP BY) against a distribution: compute count/sum/avg/min/max over
+ * columns, optionally grouped and filtered. DKAN casts the text-typed numeric columns for us.
+ * Metric values are coerced to numbers; grouping columns stay as-is.
+ */
+export async function aggregateDistribution(
+  distributionId: string,
+  opts: AggregateOptions,
+): Promise<QueryResult> {
+  const metricAliases: string[] = [];
+  const properties: Array<string | Record<string, unknown>> = [...(opts.groupBy ?? [])];
+  for (const m of opts.metrics) {
+    const alias = m.alias?.trim() || `${m.operator}_${m.column}`;
+    metricAliases.push(alias);
+    properties.push({ expression: { operator: m.operator, operands: [m.column] }, alias });
+  }
+
+  const body: Record<string, unknown> = {
+    properties,
+    limit: opts.limit ?? 50,
+    offset: opts.offset ?? 0,
+    count: false,
+    results: true,
+    schema: false,
+  };
+  if (opts.groupBy?.length) body.groupings = opts.groupBy;
+  if (opts.conditions?.length) body.conditions = opts.conditions;
+  if (opts.sorts?.length) body.sorts = opts.sorts;
+
+  const data = (await req(`/datastore/query/${encodeURIComponent(distributionId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })) as { results?: Array<Record<string, unknown>> };
+
+  const results = (data.results ?? []).map((row) => {
+    const out: Record<string, unknown> = { ...row };
+    for (const alias of metricAliases) {
+      const v = out[alias];
+      out[alias] = v === null || v === undefined || v === "" ? null : Number(v);
+    }
+    return out;
+  });
+  return { count: results.length, results };
+}
+
 /** Fetch column names, types, and CMS's human-readable labels for a distribution. */
 export async function getDistributionSchema(distributionId: string): Promise<SchemaField[]> {
   const data = (await req(`/datastore/query/${encodeURIComponent(distributionId)}`, {

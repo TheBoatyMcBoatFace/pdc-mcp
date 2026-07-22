@@ -6,6 +6,7 @@ import {
   getDataset,
   getDistributionSchema,
   queryDistribution,
+  aggregateDistribution,
   getCategories,
 } from "./pdc.js";
 
@@ -22,7 +23,10 @@ Recommended workflow:
 2. search_datasets — find datasets by keyword, optionally scoped to a category (theme).
 3. get_dataset — get a dataset's distributions (its queryable tables, each a UUID).
 4. get_dataset_schema — get exact column names before querying.
-5. query_dataset — filter/sort/select rows; the result 'count' is the total matching rows.
+5. query_dataset — filter/sort/select individual rows; 'count' is the total matching rows.
+6. aggregate_dataset — compute counts/averages/sums/min/max, optionally grouped by a column
+   (e.g. average star rating by state, number of facilities per state). Use this instead of
+   pulling many rows when the question is about totals, averages, or rankings.
 
 Columns are snake_case. This data is read-only. Cite the dataset title and note figures are
 from CMS when presenting results.`;
@@ -78,7 +82,7 @@ export class PdcMcp extends McpAgent {
   server = new McpServer(
     {
       name: "cms-pdc",
-      version: "0.4.0",
+      version: "0.5.0",
     },
     { instructions: INSTRUCTIONS },
   );
@@ -228,6 +232,89 @@ export class PdcMcp extends McpAgent {
           const { count, results } = await queryDistribution(distribution_id, {
             conditions,
             properties,
+            sorts,
+            limit,
+            offset,
+          });
+          return ok({ count, results });
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    );
+
+    this.server.registerTool(
+      "aggregate_dataset",
+      {
+        description:
+          "Aggregate a distribution (table): compute count/sum/avg/min/max over columns, optionally " +
+          "grouped by one or more columns and filtered with conditions. Use this for totals, " +
+          "averages, and rankings — e.g. 'average star rating by state', 'number of facilities per " +
+          "state', 'highest average readmission rate'. Prefer this over query_dataset when the " +
+          "question is about aggregates rather than individual rows. Numeric columns stored as text " +
+          "are handled automatically. Column names must match get_dataset_schema exactly.",
+        inputSchema: {
+          distribution_id: z.string().describe("Distribution UUID from get_dataset"),
+          metrics: z
+            .array(
+              z.object({
+                operator: z
+                  .enum(["count", "sum", "avg", "min", "max"])
+                  .describe("Aggregate function"),
+                column: z
+                  .string()
+                  .describe(
+                    "Column to aggregate (snake_case). For 'count', use any always-present " +
+                      "column, e.g. the grouping column, to count rows.",
+                  ),
+                alias: z.string().optional().describe("Name for this metric in the result"),
+              }),
+            )
+            .min(1)
+            .describe("One or more aggregates to compute"),
+          group_by: z
+            .array(z.string())
+            .optional()
+            .describe("Columns to group by (e.g. ['state']); omit for a single overall aggregate"),
+          conditions: z
+            .array(
+              z.object({
+                property: z.string().describe("Column name (snake_case)"),
+                value: z.union([
+                  z.string(),
+                  z.number(),
+                  z.array(z.union([z.string(), z.number()])),
+                ]),
+                operator: z
+                  .enum(["=", "<>", "<", "<=", ">", ">=", "like", "in", "not in"])
+                  .default("=")
+                  .describe("Comparison operator; applied before aggregating (a WHERE filter)"),
+              }),
+            )
+            .optional()
+            .describe("AND-combined filters applied before aggregation"),
+          sorts: z
+            .array(
+              z.object({
+                property: z
+                  .string()
+                  .describe("A group_by column or a metric alias to sort by"),
+                order: z.enum(["asc", "desc"]).default("asc"),
+              }),
+            )
+            .optional()
+            .describe("Sort the grouped results, e.g. by a metric alias descending for a ranking"),
+          limit: z.number().int().min(1).max(500).default(50),
+          offset: z.number().int().min(0).default(0),
+        },
+        outputSchema: { count: z.number().int(), results: z.array(zRow) },
+      },
+      async ({ distribution_id, metrics, group_by, conditions, sorts, limit, offset }) => {
+        try {
+          const { count, results } = await aggregateDistribution(distribution_id, {
+            metrics,
+            groupBy: group_by,
+            conditions,
             sorts,
             limit,
             offset,
