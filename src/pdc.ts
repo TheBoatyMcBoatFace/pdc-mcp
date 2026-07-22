@@ -58,6 +58,8 @@ export interface DatasetDetail extends DatasetSummary {
 export interface SchemaField {
   name: string;
   type: string;
+  /** Human-readable column label from CMS (the datastore's built-in field description). */
+  label?: string;
 }
 
 export interface Category {
@@ -221,18 +223,22 @@ export async function queryDistribution(
   };
 }
 
-/** Fetch just the column names + types for a distribution (limit=1 to read schema). */
+/** Fetch column names, types, and CMS's human-readable labels for a distribution. */
 export async function getDistributionSchema(distributionId: string): Promise<SchemaField[]> {
   const data = (await req(`/datastore/query/${encodeURIComponent(distributionId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ limit: 1, offset: 0, count: false, results: false, schema: true }),
-  })) as { schema?: Record<string, { fields?: Record<string, { type?: string }> }> };
+  })) as {
+    schema?: Record<string, { fields?: Record<string, { type?: string; description?: string }> }>;
+  };
 
   const schemaObj = data.schema ? Object.values(data.schema)[0] : undefined;
   const fields = schemaObj?.fields ?? {};
   return Object.entries(fields).map(([name, meta]) => ({
     name,
     type: meta?.type ?? "unknown",
+    // DKAN stores the original CSV column header as the field's `description`.
+    label: meta?.description?.trim() || undefined,
   }));
 }

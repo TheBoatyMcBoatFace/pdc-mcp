@@ -40,7 +40,7 @@ export class PdcMcp extends McpAgent {
   server = new McpServer(
     {
       name: "cms-pdc",
-      version: "0.2.0",
+      version: "0.3.0",
     },
     { instructions: INSTRUCTIONS },
   );
@@ -108,9 +108,11 @@ export class PdcMcp extends McpAgent {
 
     this.server.tool(
       "get_dataset_schema",
-      "List the column names and types for a distribution (table). ALWAYS call this before " +
-        "query_dataset so you use exact column names — CMS columns are snake_case (e.g. " +
-        "'facility_name', 'state', 'cms_certification_number_ccn').",
+      "List the columns for a distribution (table): the snake_case `name` to use in queries, its " +
+        "`type`, and CMS's human-readable `label` explaining what the column is (e.g. name " +
+        "'mortality_rate_upper_confidence_limit_975' → label 'Mortality Rate: Upper Confidence " +
+        "Limit (97.5%)'). ALWAYS call this before query_dataset so you use exact column names and " +
+        "understand what each column means.",
       {
         distribution_id: z.string().describe("Distribution UUID from get_dataset"),
       },
