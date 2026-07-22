@@ -27,75 +27,127 @@ Recommended workflow:
 Columns are snake_case. This data is read-only. Cite the dataset title and note figures are
 from CMS when presenting results.`;
 
-/** Wrap a tool body so any thrown error becomes a readable MCP result instead of a 500. */
-function ok(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+/** Success result: return data as both structured content (validated against outputSchema)
+ * and a JSON text block for clients that only read text. */
+function ok(data: object) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    structuredContent: data as Record<string, unknown>,
+  };
 }
+/** Turn a thrown error into a readable MCP error result instead of a 500. */
 function fail(err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
 }
 
+// ---- Output schemas (so clients like ChatGPT know the shape of each tool's result) ----
+const zExample = z.object({ identifier: z.string(), title: z.string() });
+const zCategory = z.object({
+  theme: z.string(),
+  datasetCount: z.number().int(),
+  examples: z.array(zExample),
+});
+const zDatasetSummary = z.object({
+  identifier: z.string(),
+  title: z.string(),
+  description: z.string(),
+  theme: z.array(z.string()).optional(),
+  modified: z.string().optional(),
+  keyword: z.array(z.string()).optional(),
+  landingPage: z.string().optional(),
+});
+const zDistribution = z.object({
+  identifier: z.string(),
+  title: z.string().optional(),
+  format: z.string().optional(),
+  downloadURL: z.string().optional(),
+});
+const zDatasetDetail = zDatasetSummary.extend({
+  distributions: z.array(zDistribution),
+  dataDictionary: z.array(z.string()).optional(),
+});
+const zColumn = z.object({
+  name: z.string(),
+  type: z.string(),
+  label: z.string().optional(),
+});
+const zRow = z.record(z.string(), z.unknown());
+
 export class PdcMcp extends McpAgent {
   server = new McpServer(
     {
       name: "cms-pdc",
-      version: "0.3.0",
+      version: "0.4.0",
     },
     { instructions: INSTRUCTIONS },
   );
 
   async init() {
-    this.server.tool(
+    this.server.registerTool(
       "list_categories",
-      "List the provider-type categories in the CMS Provider Data Catalog (e.g. Hospitals, " +
-        "Dialysis facilities, Nursing homes) with the number of datasets in each and a few example " +
-        "datasets. Call this to answer 'what data do you have access to?' and to help the user pick " +
-        "an area before searching.",
-      {},
+      {
+        description:
+          "List the provider-type categories in the CMS Provider Data Catalog (e.g. Hospitals, " +
+          "Dialysis facilities, Nursing homes) with the number of datasets in each and a few " +
+          "example datasets. Call this to answer 'what data do you have access to?' and to help " +
+          "the user pick an area before searching. Takes no arguments.",
+        inputSchema: {},
+        outputSchema: { categories: z.array(zCategory) },
+      },
       async () => {
         try {
-          return ok(await getCategories());
+          return ok({ categories: await getCategories() });
         } catch (e) {
           return fail(e);
         }
       },
     );
 
-    this.server.tool(
+    this.server.registerTool(
       "search_datasets",
-      "Search the CMS Provider Data Catalog for datasets by keyword (e.g. 'hospital readmissions', " +
-        "'dialysis facilities', 'nursing home staffing'). Optionally scope to a category with " +
-        "`theme` (exact name from list_categories) and/or a `keyword`. Returns dataset identifiers, " +
-        "titles, and descriptions to inspect and query.",
       {
-        query: z
-          .string()
-          .default("")
-          .describe("Free-text search terms; leave empty to browse a whole theme"),
-        theme: z
-          .string()
-          .optional()
-          .describe("Restrict to a provider-type category, exact name from list_categories"),
-        keyword: z.string().optional().describe("Restrict to datasets tagged with this keyword"),
-        limit: z.number().int().min(1).max(50).default(10).describe("Max datasets to return"),
+        description:
+          "Search the CMS Provider Data Catalog for datasets by keyword (e.g. 'hospital " +
+          "readmissions', 'dialysis facilities', 'nursing home staffing'). Optionally scope to a " +
+          "category with `theme` (exact name from list_categories) and/or a `keyword`. Returns " +
+          "dataset identifiers, titles, and descriptions to inspect and query.",
+        inputSchema: {
+          query: z
+            .string()
+            .default("")
+            .describe("Free-text search terms; leave empty to browse a whole theme"),
+          theme: z
+            .string()
+            .optional()
+            .describe("Restrict to a provider-type category, exact name from list_categories"),
+          keyword: z.string().optional().describe("Restrict to datasets tagged with this keyword"),
+          limit: z.number().int().min(1).max(50).default(10).describe("Max datasets to return"),
+        },
+        outputSchema: { datasets: z.array(zDatasetSummary) },
       },
       async ({ query, theme, keyword, limit }) => {
         try {
-          return ok(await searchDatasets(query, { theme, keyword, pageSize: limit }));
+          return ok({ datasets: await searchDatasets(query, { theme, keyword, pageSize: limit }) });
         } catch (e) {
           return fail(e);
         }
       },
     );
 
-    this.server.tool(
+    this.server.registerTool(
       "get_dataset",
-      "Get full metadata for one dataset by its identifier, including its list of distributions " +
-        "(the queryable tables). Each distribution has an `identifier` (a UUID) that you pass to " +
-        "get_dataset_schema and query_dataset.",
       {
-        identifier: z.string().describe("Dataset identifier from search_datasets, e.g. '23ew-n7w9'"),
+        description:
+          "Get full metadata for one dataset by its identifier, including its list of distributions " +
+          "(the queryable tables). Each distribution has an `identifier` (a UUID) that you pass to " +
+          "get_dataset_schema and query_dataset.",
+        inputSchema: {
+          identifier: z
+            .string()
+            .describe("Dataset identifier from search_datasets, e.g. '23ew-n7w9'"),
+        },
+        outputSchema: zDatasetDetail.shape,
       },
       async ({ identifier }) => {
         try {
@@ -106,74 +158,81 @@ export class PdcMcp extends McpAgent {
       },
     );
 
-    this.server.tool(
+    this.server.registerTool(
       "get_dataset_schema",
-      "List the columns for a distribution (table): the snake_case `name` to use in queries, its " +
-        "`type`, and CMS's human-readable `label` explaining what the column is (e.g. name " +
-        "'mortality_rate_upper_confidence_limit_975' → label 'Mortality Rate: Upper Confidence " +
-        "Limit (97.5%)'). ALWAYS call this before query_dataset so you use exact column names and " +
-        "understand what each column means.",
       {
-        distribution_id: z.string().describe("Distribution UUID from get_dataset"),
+        description:
+          "List the columns for a distribution (table): the snake_case `name` to use in queries, " +
+          "its `type`, and CMS's human-readable `label` explaining what the column is (e.g. name " +
+          "'mortality_rate_upper_confidence_limit_975' → label 'Mortality Rate: Upper Confidence " +
+          "Limit (97.5%)'). ALWAYS call this before query_dataset so you use exact column names and " +
+          "understand what each column means.",
+        inputSchema: {
+          distribution_id: z.string().describe("Distribution UUID from get_dataset"),
+        },
+        outputSchema: { columns: z.array(zColumn) },
       },
       async ({ distribution_id }) => {
         try {
-          return ok(await getDistributionSchema(distribution_id));
+          return ok({ columns: await getDistributionSchema(distribution_id) });
         } catch (e) {
           return fail(e);
         }
       },
     );
 
-    this.server.tool(
+    this.server.registerTool(
       "query_dataset",
-      "Run a structured query against a distribution (table). Filter with conditions, pick columns " +
-        "with `properties`, sort, and page with limit/offset. Column names must match " +
-        "get_dataset_schema exactly. `count` in the result is the total matching rows (not just " +
-        "the returned page).",
       {
-        distribution_id: z.string().describe("Distribution UUID from get_dataset"),
-        conditions: z
-          .array(
-            z.object({
-              property: z.string().describe("Column name (snake_case)"),
-              value: z
-                .union([z.string(), z.number(), z.array(z.union([z.string(), z.number()]))])
-                .describe("Value to match; array when operator is 'in'/'not in'"),
-              operator: z
-                .enum(["=", "<>", "<", "<=", ">", ">=", "like", "in", "not in"])
-                .default("=")
-                .describe("Comparison operator. 'like' uses % wildcards."),
-            }),
-          )
-          .optional()
-          .describe("AND-combined filters"),
-        properties: z
-          .array(z.string())
-          .optional()
-          .describe("Columns to return; omit for all columns"),
-        sorts: z
-          .array(
-            z.object({
-              property: z.string(),
-              order: z.enum(["asc", "desc"]).default("asc"),
-            }),
-          )
-          .optional(),
-        limit: z.number().int().min(1).max(500).default(20),
-        offset: z.number().int().min(0).default(0),
+        description:
+          "Run a structured query against a distribution (table). Filter with conditions, pick " +
+          "columns with `properties`, sort, and page with limit/offset. Column names must match " +
+          "get_dataset_schema exactly. `count` in the result is the total matching rows (not just " +
+          "the returned page).",
+        inputSchema: {
+          distribution_id: z.string().describe("Distribution UUID from get_dataset"),
+          conditions: z
+            .array(
+              z.object({
+                property: z.string().describe("Column name (snake_case)"),
+                value: z
+                  .union([z.string(), z.number(), z.array(z.union([z.string(), z.number()]))])
+                  .describe("Value to match; array when operator is 'in'/'not in'"),
+                operator: z
+                  .enum(["=", "<>", "<", "<=", ">", ">=", "like", "in", "not in"])
+                  .default("=")
+                  .describe("Comparison operator. 'like' uses % wildcards."),
+              }),
+            )
+            .optional()
+            .describe("AND-combined filters"),
+          properties: z
+            .array(z.string())
+            .optional()
+            .describe("Columns to return; omit for all columns"),
+          sorts: z
+            .array(
+              z.object({
+                property: z.string(),
+                order: z.enum(["asc", "desc"]).default("asc"),
+              }),
+            )
+            .optional(),
+          limit: z.number().int().min(1).max(500).default(20),
+          offset: z.number().int().min(0).default(0),
+        },
+        outputSchema: { count: z.number().int(), results: z.array(zRow) },
       },
       async ({ distribution_id, conditions, properties, sorts, limit, offset }) => {
         try {
-          return ok(
-            await queryDistribution(distribution_id, {
-              conditions,
-              properties,
-              sorts,
-              limit,
-              offset,
-            }),
-          );
+          const { count, results } = await queryDistribution(distribution_id, {
+            conditions,
+            properties,
+            sorts,
+            limit,
+            offset,
+          });
+          return ok({ count, results });
         } catch (e) {
           return fail(e);
         }
