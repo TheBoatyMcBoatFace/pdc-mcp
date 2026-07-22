@@ -16,6 +16,8 @@ So a client (and the user) can tell at a glance what's available:
 - **`pdc://catalog` resource** — the browsable category map (themes, dataset counts, examples)
   as ambient context for clients that support MCP resources.
 - **`explore_cms_data` prompt** — one-click "what CMS data can I explore?" for the user.
+- **Typed output schemas** — every tool declares an `outputSchema` and returns `structuredContent`,
+  so clients (e.g. ChatGPT dev mode) can parse and render results reliably instead of re-reading JSON.
 
 ## Tools
 
