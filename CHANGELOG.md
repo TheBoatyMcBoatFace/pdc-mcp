@@ -3,6 +3,28 @@
 All notable changes to the CMS Provider Data Catalog MCP server. Format follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic-ish `0.x` versions.
 
+## [0.9.0] — 2026-07-22 — Rich column descriptions (initial)
+
+### Added
+
+- `get_dataset_schema` now returns a sentence-level `description` per column when a confident match
+  exists, sourced from committed maps in `src/dictionaries/` built by `scripts/build-dictionaries.mjs`
+  from the CMS data-dictionary files. Matching is conservative (exact label or the facility variant
+  of a "… (Facility)" label). Initial coverage: dialysis (~39%) and physician; other providers use
+  different PDF layouts and need bespoke extraction.
+
+### Changed
+
+- `scripts/build-dictionaries.mjs` reads local `data_dictionaries/` files and re-derives table
+  column boundaries per page-header (fixes low extraction from multi-page dictionaries).
+
+## [0.8.0] — 2026-07-22 — Tool annotations
+
+### Added
+
+- Every tool now has a human `title` and `readOnlyHint`/`idempotentHint`/`openWorldHint`
+  annotations, so clients can label them and know they never modify data.
+
 ## [0.7.0] — 2026-07-22 — Reliability & ops
 
 ### Added

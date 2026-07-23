@@ -1,0 +1,12 @@
+{
+  "//": "Hand-authored column descriptions, keyed by the exact CMS column label. These ALWAYS win and are never overwritten by scripts/build-dictionaries.mjs. Use for columns whose label diverges from the PDF (e.g. 'Facility Name' vs PDF 'CMS Provider Name') or providers whose PDFs don't auto-parse. Add an entry, run `npm run build:dictionaries`, commit.",
+  "Facility Name": "The Name Of The Facility",
+  "Chain Owned": "Whether Or Not The Facility Is Owned Or Managed By A Chain Organization",
+  "Chain Organization": "The Name Of The Chain Organization If Applicable",
+  "Late Shift": "Whether Or Not The Facility Has A Shift Starting At 5:00 P.M. Or Later",
+  "# of Dialysis Stations": "The Total Number Of Dialysis Stations At The Dialysis Facility",
+  "Offers in-center hemodialysis": "Whether The Facility Offers In-Center Hemodialysis",
+  "Offers peritoneal dialysis": "Whether The Facility Offers Peritoneal Dialysis",
+  "Offers home hemodialysis training": "Whether The Facility Offers Home Hemodialysis Training",
+  "Certification Date": "The Initial Or Recertification Date For The Facility. Facilities Are Certified If They Pass Inspection; Medicare Or Medicaid Only Covers Care Provided By Certified Providers. Being Certified Is Not The Same As Being Accredited"
+}

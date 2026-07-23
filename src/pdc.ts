@@ -4,6 +4,27 @@
  * All endpoints here are unauthenticated GET/POST reads.
  */
 
+// Committed column descriptions built from CMS data-dictionaries by scripts/build-dictionaries.mjs.
+// Keyed by normalized column label; matched to schema columns at runtime (no PDF parsing here).
+import descriptionsJson from "./dictionaries/descriptions.json";
+
+const DESCRIPTIONS = descriptionsJson as Record<string, string>;
+const normLabel = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/** Find a rich description for a column by its CMS label. Exact match, or the facility variant
+ * of a "… (Facility)" label. Deliberately conservative — a missing description beats a wrong one. */
+function descriptionForLabel(label?: string): string | undefined {
+  if (!label) return undefined;
+  const key = normLabel(label);
+  if (DESCRIPTIONS[key]) return DESCRIPTIONS[key];
+  const m = label.match(/\s*\(facility\)\s*$/i);
+  if (m) {
+    const base = normLabel(label.slice(0, m.index));
+    if (DESCRIPTIONS[base]) return DESCRIPTIONS[base];
+  }
+  return undefined;
+}
+
 const BASE = "https://data.cms.gov/provider-data/api/1";
 const UA = "cms-pdc-mcp (+https://data.cms.gov)";
 
@@ -139,6 +160,8 @@ export interface SchemaField {
   type: string;
   /** Human-readable column label from CMS (the datastore's built-in field description). */
   label?: string;
+  /** Sentence-level description from the CMS data dictionary, when a confident match exists. */
+  description?: string;
 }
 
 export interface Category {
@@ -469,10 +492,14 @@ export async function getDistributionSchema(distributionId: string): Promise<Sch
 
   const schemaObj = data.schema ? Object.values(data.schema)[0] : undefined;
   const fields = schemaObj?.fields ?? {};
-  return Object.entries(fields).map(([name, meta]) => ({
-    name,
-    type: meta?.type ?? "unknown",
-    // DKAN stores the original CSV column header as the field's `description`.
-    label: meta?.description?.trim() || undefined,
-  }));
+  return Object.entries(fields).map(([name, meta]) => {
+    // DKAN stores the original CSV column header as the field's `description`; treat it as the label.
+    const label = meta?.description?.trim() || undefined;
+    return {
+      name,
+      type: meta?.type ?? "unknown",
+      label,
+      description: descriptionForLabel(label),
+    };
+  });
 }

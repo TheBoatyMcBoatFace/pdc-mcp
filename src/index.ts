@@ -78,6 +78,7 @@ const zColumn = z.object({
   name: z.string(),
   type: z.string(),
   label: z.string().optional(),
+  description: z.string().optional(),
 });
 const zRow = z.record(z.string(), z.unknown());
 
@@ -93,7 +94,7 @@ export class PdcMcp extends McpAgent {
   server = new McpServer(
     {
       name: "cms-pdc",
-      version: "0.8.0",
+      version: "0.9.0",
     },
     { instructions: INSTRUCTIONS },
   );
@@ -186,10 +187,9 @@ export class PdcMcp extends McpAgent {
         annotations: READ_ONLY,
         description:
           "List the columns for a distribution (table): the snake_case `name` to use in queries, " +
-          "its `type`, and CMS's human-readable `label` explaining what the column is (e.g. name " +
-          "'mortality_rate_upper_confidence_limit_975' → label 'Mortality Rate: Upper Confidence " +
-          "Limit (97.5%)'). ALWAYS call this before query_dataset so you use exact column names and " +
-          "understand what each column means.",
+          "its `type`, CMS's human-readable `label`, and — when available — a longer `description` " +
+          "from the CMS data dictionary explaining what the column means. ALWAYS call this before " +
+          "query_dataset so you use exact column names and understand each column.",
         inputSchema: {
           distribution_id: z.string().describe("Distribution UUID from get_dataset"),
         },
