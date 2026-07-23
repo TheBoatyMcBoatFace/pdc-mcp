@@ -29,9 +29,15 @@ So a client (and the user) can tell at a glance what's available:
 | `get_dataset_schema` | Column `name` + `type` + CMS's human-readable `label` for a distribution — call before querying |
 | `query_dataset` | Structured query: `conditions` (filters), `properties` (column select), `sorts`, `limit`/`offset`. Returns rows + total match `count`. |
 | `aggregate_dataset` | GROUP BY aggregation: `count`/`sum`/`avg`/`min`/`max` metrics, optional `group_by`, `conditions` (WHERE), and `sorts` (rank by a metric). E.g. average star rating by state, facilities per state. |
+| `compare_to_benchmarks` | One entity vs. benchmarks in a single call: each measure's value for a facility alongside the national average and its group (e.g. state) average, with cohort sizes. |
 
 Intended workflow the tool descriptions steer the model toward:
-**list_categories → search_datasets → get_dataset → get_dataset_schema → query_dataset / aggregate_dataset.**
+**list_categories → search_datasets → get_dataset → get_dataset_schema → query_dataset / aggregate_dataset / compare_to_benchmarks.**
+
+`compare_to_benchmarks` computes benchmarks as simple averages over the distribution's own rows
+(transparent, in 3 upstream calls) — not CMS's separately published risk-adjusted State/National
+Averages datasets, whose columns don't map 1:1 to facility columns. Those remain queryable
+directly via the normal tools.
 
 Aggregation uses DKAN's structured query (expression + `groupings`), not SQL — DKAN's SQL
 endpoint doesn't support GROUP BY. Numeric columns stored as text are cast automatically, and
@@ -69,6 +75,19 @@ After deploy you'll have a URL like `https://cms-pdc-mcp.<subdomain>.workers.dev
 
 Add it as a custom connector in Claude, or via Developer Mode / connectors in ChatGPT.
 No auth is required.
+
+## Reliability & ops
+
+All upstream calls to CMS go through one hardened `req()` helper (`src/pdc.ts`):
+
+- **Retries with backoff** on transient failures (network errors, 5xx, 429); fails fast on 4xx.
+- **Bounded timeout** (20s) with a clear timeout error rather than a hang.
+- **Clean error messages** — DKAN's `{ message }` is surfaced (e.g. "Column not found.") instead
+  of a raw JSON blob.
+- **Short-TTL GET caching** (60s, Cloudflare Cache API) so repeated identical reads within a
+  conversation don't re-hit CMS. POST queries/aggregations are always fresh.
+- **Structured logs** (`{"at":"pdc",method,path,status,ms,cache}`) surface in Workers
+  observability (enabled in `wrangler.jsonc`).
 
 ## Notes / next steps
 

@@ -5,31 +5,110 @@
  */
 
 const BASE = "https://data.cms.gov/provider-data/api/1";
+const UA = "cms-pdc-mcp (+https://data.cms.gov)";
 
 /** DKAN can be slow on cold cache; keep a bounded timeout so tool calls don't hang. */
 const TIMEOUT_MS = 20_000;
+/** Retry transient upstream failures (network, 5xx, 429) this many times. */
+const MAX_RETRIES = 2;
+/** Cache successful GET reads briefly — protects CMS's API from repeated identical reads
+ * within a conversation and speeds repeats, at a freshness cost of at most a minute. */
+const GET_CACHE_TTL_S = 60;
+
+/** Turn a DKAN error body into a concise message (DKAN returns { message, status }). */
+function upstreamError(status: number, text: string, path: string): Error {
+  let detail = text.slice(0, 300);
+  try {
+    const j = JSON.parse(text);
+    if (j && typeof j.message === "string") detail = j.message.replace(/\s+/g, " ").trim();
+  } catch {
+    /* not JSON; keep raw snippet */
+  }
+  return new Error(`PDC API ${status} for ${path}: ${detail}`);
+}
+
+/** Cloudflare's default cache, when available (Workers runtime). */
+function defaultCache(): Cache | null {
+  try {
+    return (globalThis as { caches?: { default?: Cache } }).caches?.default ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function req(path: string, init?: RequestInit): Promise<unknown> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      ...init,
-      signal: ctrl.signal,
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "cms-pdc-mcp/0.1 (+https://data.cms.gov)",
-        ...(init?.headers ?? {}),
-      },
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`PDC API ${res.status} ${res.statusText} for ${path}: ${text.slice(0, 300)}`);
+  const url = `${BASE}${path}`;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const cache = method === "GET" ? defaultCache() : null;
+  const cacheKey = cache ? new Request(url) : null;
+
+  if (cache && cacheKey) {
+    const hit = await cache.match(cacheKey);
+    if (hit) {
+      console.log(JSON.stringify({ at: "pdc", method, path, cache: "hit" }));
+      const t = await hit.text();
+      return t ? JSON.parse(t) : null;
     }
-    return text ? JSON.parse(text) : null;
-  } finally {
-    clearTimeout(t);
   }
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    const start = Date.now();
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: ctrl.signal,
+        headers: { Accept: "application/json", "User-Agent": UA, ...(init?.headers ?? {}) },
+      });
+      const text = await res.text();
+      const ms = Date.now() - start;
+
+      if (!res.ok) {
+        // Retry transient statuses; fail fast on 4xx (bad query, not found, etc.).
+        if ((res.status >= 500 || res.status === 429) && attempt < MAX_RETRIES) {
+          lastErr = upstreamError(res.status, text, path);
+          await sleep(200 * (attempt + 1));
+          continue;
+        }
+        console.log(JSON.stringify({ at: "pdc", method, path, status: res.status, ms }));
+        throw upstreamError(res.status, text, path);
+      }
+
+      console.log(JSON.stringify({ at: "pdc", method, path, status: res.status, ms, attempt }));
+      if (cache && cacheKey && text) {
+        await cache.put(
+          cacheKey,
+          new Response(text, {
+            headers: {
+              "Cache-Control": `max-age=${GET_CACHE_TTL_S}`,
+              "Content-Type": "application/json",
+            },
+          }),
+        );
+      }
+      return text ? JSON.parse(text) : null;
+    } catch (e) {
+      clearTimeout(timer);
+      const aborted = e instanceof Error && e.name === "AbortError";
+      // Retry network blips (TypeError from fetch), but not timeouts (keeps latency bounded)
+      // and not the upstreamError we threw above (already final).
+      const transient = !aborted && e instanceof TypeError;
+      if (transient && attempt < MAX_RETRIES) {
+        lastErr = e;
+        await sleep(200 * (attempt + 1));
+        continue;
+      }
+      if (aborted) throw new Error(`PDC API timeout after ${TIMEOUT_MS}ms for ${path}`);
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(`PDC API request failed for ${path}`);
 }
 
 export interface DatasetSummary {
@@ -284,6 +363,98 @@ export async function aggregateDistribution(
     return out;
   });
   return { count: results.length, results };
+}
+
+/** Coerce a datastore text value to a number, or null when blank/non-numeric. */
+function toNum(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+export interface CompareOptions {
+  idColumn: string;
+  idValue: string;
+  measures: string[];
+  groupColumn?: string;
+}
+
+export interface Comparison {
+  measure: string;
+  entity: number | null;
+  group?: number | null;
+  national: number | null;
+}
+
+export interface CompareResult {
+  entity: {
+    column: string;
+    value: string;
+    group?: { column: string; value: string | null };
+  };
+  nationalCount: number;
+  groupCount?: number;
+  comparisons: Comparison[];
+}
+
+/**
+ * Compare one entity's measures against benchmarks computed from the same distribution:
+ * the national (overall) average and, if `groupColumn` is given, the average within the
+ * entity's own group (e.g. its state). Benchmarks are simple averages of the facility-level
+ * data — transparent, not CMS's separately published risk-adjusted averages. Runs in 3
+ * upstream calls regardless of how many measures are requested.
+ */
+export async function compareToBenchmarks(
+  distributionId: string,
+  opts: CompareOptions,
+): Promise<CompareResult> {
+  // 1) The entity's own row.
+  const { results } = await queryDistribution(distributionId, {
+    conditions: [{ property: opts.idColumn, value: opts.idValue, operator: "=" }],
+    limit: 1,
+  });
+  const row = results[0];
+  if (!row) throw new Error(`No row found where ${opts.idColumn} = "${opts.idValue}".`);
+
+  const COUNT = "__count";
+  const metrics: Metric[] = opts.measures.map((m) => ({ operator: "avg", column: m, alias: m }));
+  const withCount: Metric[] = [...metrics, { operator: "count", column: opts.idColumn, alias: COUNT }];
+
+  // 2) National (overall) averages.
+  const nat = await aggregateDistribution(distributionId, { metrics: withCount });
+  const natRow = nat.results[0] ?? {};
+
+  // 3) The entity's group averages (optional).
+  const groupValue = opts.groupColumn ? (row[opts.groupColumn] ?? null) : undefined;
+  let grpRow: Record<string, unknown> = {};
+  let groupCount: number | undefined;
+  if (opts.groupColumn && groupValue !== null && groupValue !== "") {
+    const grp = await aggregateDistribution(distributionId, {
+      metrics: withCount,
+      conditions: [{ property: opts.groupColumn, value: String(groupValue), operator: "=" }],
+    });
+    grpRow = grp.results[0] ?? {};
+    groupCount = toNum(grpRow[COUNT]) ?? undefined;
+  }
+
+  const comparisons: Comparison[] = opts.measures.map((m) => {
+    const c: Comparison = { measure: m, entity: toNum(row[m]), national: toNum(natRow[m]) };
+    if (opts.groupColumn) c.group = toNum(grpRow[m]);
+    return c;
+  });
+
+  return {
+    entity: {
+      column: opts.idColumn,
+      value: opts.idValue,
+      ...(opts.groupColumn
+        ? { group: { column: opts.groupColumn, value: groupValue == null ? null : String(groupValue) } }
+        : {}),
+    },
+    nationalCount: toNum(natRow[COUNT]) ?? 0,
+    ...(groupCount !== undefined ? { groupCount } : {}),
+    comparisons,
+  };
 }
 
 /** Fetch column names, types, and CMS's human-readable labels for a distribution. */

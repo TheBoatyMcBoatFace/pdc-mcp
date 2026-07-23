@@ -7,6 +7,7 @@ import {
   getDistributionSchema,
   queryDistribution,
   aggregateDistribution,
+  compareToBenchmarks,
   getCategories,
 } from "./pdc.js";
 
@@ -27,6 +28,8 @@ Recommended workflow:
 6. aggregate_dataset — compute counts/averages/sums/min/max, optionally grouped by a column
    (e.g. average star rating by state, number of facilities per state). Use this instead of
    pulling many rows when the question is about totals, averages, or rankings.
+7. compare_to_benchmarks — for "how does X compare?" questions: one entity's measures vs the
+   national average and its group (e.g. state) average, in one call.
 
 Columns are snake_case. This data is read-only. Cite the dataset title and note figures are
 from CMS when presenting results.`;
@@ -82,7 +85,7 @@ export class PdcMcp extends McpAgent {
   server = new McpServer(
     {
       name: "cms-pdc",
-      version: "0.5.0",
+      version: "0.7.0",
     },
     { instructions: INSTRUCTIONS },
   );
@@ -320,6 +323,68 @@ export class PdcMcp extends McpAgent {
             offset,
           });
           return ok({ count, results });
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    );
+
+    this.server.registerTool(
+      "compare_to_benchmarks",
+      {
+        description:
+          "Answer 'how does this one compare?' in a single call: given a distribution, an entity " +
+          "(e.g. a facility identified by its CCN column), and one or more numeric measures, " +
+          "returns each measure's value for the entity alongside the national (overall) average " +
+          "and — if `group_column` is given (e.g. 'state') — the average within the entity's own " +
+          "group. Benchmarks are simple averages computed from this dataset's rows (transparent, " +
+          "not CMS's separately published risk-adjusted averages). Column names must match " +
+          "get_dataset_schema; measures must be numeric columns.",
+        inputSchema: {
+          distribution_id: z.string().describe("Distribution UUID from get_dataset"),
+          id_column: z
+            .string()
+            .describe("Column that identifies the entity, e.g. 'cms_certification_number_ccn'"),
+          id_value: z.string().describe("The entity's id value in id_column"),
+          measures: z
+            .array(z.string())
+            .min(1)
+            .describe("Numeric columns to compare, e.g. ['mortality_rate_facility', 'five_star']"),
+          group_column: z
+            .string()
+            .optional()
+            .describe("Column for the mid-level benchmark, e.g. 'state'; omit for national only"),
+        },
+        outputSchema: {
+          entity: z.object({
+            column: z.string(),
+            value: z.string(),
+            group: z
+              .object({ column: z.string(), value: z.string().nullable() })
+              .optional(),
+          }),
+          nationalCount: z.number().int(),
+          groupCount: z.number().int().optional(),
+          comparisons: z.array(
+            z.object({
+              measure: z.string(),
+              entity: z.number().nullable(),
+              group: z.number().nullable().optional(),
+              national: z.number().nullable(),
+            }),
+          ),
+        },
+      },
+      async ({ distribution_id, id_column, id_value, measures, group_column }) => {
+        try {
+          return ok(
+            await compareToBenchmarks(distribution_id, {
+              idColumn: id_column,
+              idValue: id_value,
+              measures,
+              groupColumn: group_column,
+            }),
+          );
         } catch (e) {
           return fail(e);
         }
