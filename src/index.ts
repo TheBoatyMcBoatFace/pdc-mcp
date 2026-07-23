@@ -81,11 +81,19 @@ const zColumn = z.object({
 });
 const zRow = z.record(z.string(), z.unknown());
 
+// Every tool here is a read-only lookup against an external (open-world) API.
+const READ_ONLY = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+
 export class PdcMcp extends McpAgent {
   server = new McpServer(
     {
       name: "cms-pdc",
-      version: "0.7.0",
+      version: "0.8.0",
     },
     { instructions: INSTRUCTIONS },
   );
@@ -94,6 +102,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "list_categories",
       {
+        title: "List provider categories",
+        annotations: READ_ONLY,
         description:
           "List the provider-type categories in the CMS Provider Data Catalog (e.g. Hospitals, " +
           "Dialysis facilities, Nursing homes) with the number of datasets in each and a few " +
@@ -114,6 +124,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "search_datasets",
       {
+        title: "Search datasets",
+        annotations: READ_ONLY,
         description:
           "Search the CMS Provider Data Catalog for datasets by keyword (e.g. 'hospital " +
           "readmissions', 'dialysis facilities', 'nursing home staffing'). Optionally scope to a " +
@@ -145,6 +157,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "get_dataset",
       {
+        title: "Get dataset details",
+        annotations: READ_ONLY,
         description:
           "Get full metadata for one dataset by its identifier, including its list of distributions " +
           "(the queryable tables). Each distribution has an `identifier` (a UUID) that you pass to " +
@@ -168,6 +182,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "get_dataset_schema",
       {
+        title: "Get dataset columns",
+        annotations: READ_ONLY,
         description:
           "List the columns for a distribution (table): the snake_case `name` to use in queries, " +
           "its `type`, and CMS's human-readable `label` explaining what the column is (e.g. name " +
@@ -191,6 +207,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "query_dataset",
       {
+        title: "Query dataset rows",
+        annotations: READ_ONLY,
         description:
           "Run a structured query against a distribution (table). Filter with conditions, pick " +
           "columns with `properties`, sort, and page with limit/offset. Column names must match " +
@@ -249,6 +267,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "aggregate_dataset",
       {
+        title: "Aggregate dataset",
+        annotations: READ_ONLY,
         description:
           "Aggregate a distribution (table): compute count/sum/avg/min/max over columns, optionally " +
           "grouped by one or more columns and filtered with conditions. Use this for totals, " +
@@ -332,6 +352,8 @@ export class PdcMcp extends McpAgent {
     this.server.registerTool(
       "compare_to_benchmarks",
       {
+        title: "Compare to benchmarks",
+        annotations: READ_ONLY,
         description:
           "Answer 'how does this one compare?' in a single call: given a distribution, an entity " +
           "(e.g. a facility identified by its CCN column), and one or more numeric measures, " +
